@@ -1,0 +1,83 @@
+name: Test db-store
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: raven-actions/actionlint@v2
+
+  db-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create test db
+        run: |
+          mkdir -p data/db
+          printf 'hello\n' > data/db/git-fit.db
+      - name: Save to cache (first run)
+        id: save1
+        uses: ./cache/save
+        with:
+          database-path: data/db/git-fit.db
+      - name: Assert changed=true
+        run: test "${{ steps.save1.outputs.changed }}" = "true"
+      - name: Restore from cache
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: data/db/git-fit.db
+      - name: Assert db-dir and file restored
+        run: |
+          test "${{ steps.restore.outputs.db-dir }}" = "data/db"
+          test -f data/db/git-fit.db
+      - name: Save again (unchanged)
+        id: save2
+        uses: ./cache/save
+        with:
+          database-path: data/db/git-fit.db
+      - name: Assert changed=false (gate)
+        run: test "${{ steps.save2.outputs.changed }}" = "false"
+
+  db-path-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - path: data/db/git-fit.db
+            expected-dir: data/db
+          - path: nested/level/db/git-fit.db
+            expected-dir: nested/level/db
+          - path: /tmp/git-fit-db/git-fit.db
+            expected-dir: /tmp/git-fit-db
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore (normalize check)
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: ${{ matrix.path }}
+      - name: Assert db-dir
+        run: test "${{ steps.restore.outputs.db-dir }}" = "${{ matrix.expected-dir }}"
+
+  db-invalid-path:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Invalid path must fail
+        id: invalid
+        continue-on-error: true
+        uses: ./cache/save
+        with:
+          database-path: '-bad'
+      - name: Assert invalid failed
+        run: test "${{ steps.invalid.outcome }}" = "failure"

@@ -1,0 +1,72 @@
+name: DB store cache save
+description: Detect changes and save the GitFit database cache after syncing.
+author: Lax
+branding:
+  icon: database
+  color: green
+
+inputs:
+  database-path:
+    description: Path to the GitFit database file.
+    required: false
+    default: data/db/git-fit.db
+
+outputs:
+  changed:
+    description: Whether the database changed during sync.
+    value: ${{ steps.check.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - name: '[db] Validate database path'
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        if [ -z "$DATABASE_PATH" ] || [[ "$DATABASE_PATH" =~ [[:cntrl:]] ]] || [[ "$DATABASE_PATH" == -* ]]; then
+          echo "::error::Invalid database-path '$DATABASE_PATH'" >&2
+          exit 1
+        fi
+    - name: '[db] Normalize database paths'
+      id: normalize
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        DB_PATH="$(realpath -m "$DATABASE_PATH")"
+        DB_DIR="$(dirname "$DB_PATH")"
+        case "$DB_DIR" in
+          "$GITHUB_WORKSPACE"/*) REL_DIR="${DB_DIR#"$GITHUB_WORKSPACE"/}" ;;
+          "$GITHUB_WORKSPACE")   REL_DIR="." ;;
+          *)                     REL_DIR="$DB_DIR" ;;
+        esac
+        echo "db-dir=$REL_DIR" >> "$GITHUB_OUTPUT"
+    - name: '[db] Check for changes'
+      id: check
+      shell: bash
+      env:
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+      run: |
+        CHANGED=false
+        DIR="$DB_DIR"
+        if [ -d "$DIR" ]; then
+          (cd "$DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/git-fit-db-after.SHA256SUMS")
+          if [ -f "$RUNNER_TEMP/git-fit-db-before.SHA256SUMS" ] && diff -q \
+               "$RUNNER_TEMP/git-fit-db-before.SHA256SUMS" "$RUNNER_TEMP/git-fit-db-after.SHA256SUMS" >/dev/null 2>&1; then
+            echo "unchanged: db"
+          else
+            echo "changed: db"
+            CHANGED=true
+          fi
+        else
+          echo "absent: db"
+          CHANGED=true
+        fi
+        echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+    - name: '[db] Save cached database'
+      if: steps.check.outputs.changed == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.normalize.outputs.db-dir }}
+        key: GitFit-db-v0-${{ github.run_number }}-${{ github.run_id }}${{ github.run_attempt > 1 && format('-{0}', github.run_attempt) || '' }}

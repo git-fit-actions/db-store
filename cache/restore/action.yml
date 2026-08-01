@@ -1,0 +1,61 @@
+name: DB store cache restore
+description: Restore the GitFit database cache and snapshot baseline checksums before syncing.
+author: Lax
+branding:
+  icon: database
+  color: blue
+
+inputs:
+  database-path:
+    description: Path to the GitFit database file.
+    required: false
+    default: data/db/git-fit.db
+
+outputs:
+  db-dir:
+    description: Directory containing the database (relative to workspace when possible).
+    value: ${{ steps.normalize.outputs.db-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: '[db] Validate database path'
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        if [ -z "$DATABASE_PATH" ] || [[ "$DATABASE_PATH" =~ [[:cntrl:]] ]] || [[ "$DATABASE_PATH" == -* ]]; then
+          echo "::error::Invalid database-path '$DATABASE_PATH'" >&2
+          exit 1
+        fi
+    - name: '[db] Normalize database paths'
+      id: normalize
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        DB_PATH="$(realpath -m "$DATABASE_PATH")"
+        DB_DIR="$(dirname "$DB_PATH")"
+        case "$DB_DIR" in
+          "$GITHUB_WORKSPACE"/*) REL_DIR="${DB_DIR#"$GITHUB_WORKSPACE"/}" ;;
+          "$GITHUB_WORKSPACE")   REL_DIR="." ;;
+          *)                     REL_DIR="$DB_DIR" ;;
+        esac
+        echo "db-dir=$REL_DIR" >> "$GITHUB_OUTPUT"
+    - name: '[db] Restore from cache'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.normalize.outputs.db-dir }}
+        key: GitFit-db-v0-cold
+        restore-keys: |
+          GitFit-db-v0-
+    - name: '[db] Baseline SHA256SUMS'
+      shell: bash
+      env:
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+      run: |
+        if [ -d "$DB_DIR" ]; then
+          (cd "$DB_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/git-fit-db-before.SHA256SUMS")
+        else
+          : > "$RUNNER_TEMP/git-fit-db-before.SHA256SUMS"
+        fi
