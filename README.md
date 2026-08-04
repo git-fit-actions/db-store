@@ -44,11 +44,20 @@ steps:
 
 ## Cache key scheme
 
+All keys share a `GitFit-db-v0-` prefix. `cache/restore` never writes a cache:
+its exact `key` is a sentinel that always misses, forcing a `restore-keys` prefix match that
+selects the most recently created cache.
+
 ```
-GitFit-db-v0-cold                              (restore key)
-GitFit-db-v0-*                                 (restore-keys prefix)
-GitFit-db-v0-<run_number>-<run_id>[-<attempt>] (save key)
+GitFit-db-v0-sentinel                          (restore exact key — sentinel, never written)
+GitFit-db-v0-*                                 (restore-keys prefix — most recent wins)
+GitFit-db-v0-<run_number>-<run_id>[-<attempt>] (sync save key)
+GitFit-db-v0-snapshot                          (unarchive recovery snapshot — external convention)
 ```
+
+- **sentinel** (`-v0-sentinel`): restore-only exact key, never written; guarantees prefix fallback.
+- **snapshot** (`-v0-snapshot`): written by unarchive workflows (git → cache) as a readable recovery snapshot.
+- Per-run sync caches are saved as `-v0-<run_number>-<run_id>`.
 
 ## Permissions
 
