@@ -1,0 +1,59 @@
+name: DB store paths
+description: >
+  Derive the database directory, filename, and full path from a single database
+  file path. Consumers wire the outputs into db-store/cache/{restore,save} and
+  git-fit so the path is defined once per workflow.
+author: Lax
+branding:
+  icon: database
+  color: blue
+
+inputs:
+  database-path:
+    description: Path to the SQLite database file. Relative to GITHUB_WORKSPACE or absolute.
+    required: false
+    default: data/db/git-fit.db
+
+outputs:
+  dir:
+    description: Database directory relative to GITHUB_WORKSPACE (e.g. data/db).
+    value: ${{ steps.derive.outputs.dir }}
+  name:
+    description: Database filename (e.g. git-fit.db).
+    value: ${{ steps.derive.outputs.name }}
+  db-path:
+    description: Full database path relative to GITHUB_WORKSPACE (dir/name).
+    value: ${{ steps.derive.outputs.db-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: '[db] Validate database path'
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        if [ -z "$DATABASE_PATH" ] || [[ "$DATABASE_PATH" =~ [[:cntrl:]] ]] || [[ "$DATABASE_PATH" == -* ]]; then
+          echo "::error::Invalid database-path '$DATABASE_PATH'" >&2
+          exit 1
+        fi
+    - name: '[db] Derive paths'
+      id: derive
+      shell: bash
+      env:
+        DATABASE_PATH: ${{ inputs.database-path }}
+      run: |
+        P="$(realpath -m "$DATABASE_PATH")"
+        GW="${GITHUB_WORKSPACE:-}"
+        if [ -n "$GW" ]; then
+          case "$P" in
+            "$GW"/*) REL="${P#"$GW"/}" ;;
+            "$GW")   REL="." ;;
+            *)       REL="$P" ;;
+          esac
+        else
+          REL="$P"
+        fi
+        echo "dir=$(dirname "$REL")" >> "$GITHUB_OUTPUT"
+        echo "name=$(basename "$REL")" >> "$GITHUB_OUTPUT"
+        echo "db-path=$REL" >> "$GITHUB_OUTPUT"

@@ -6,10 +6,14 @@ branding:
   color: blue
 
 inputs:
-  database-path:
-    description: Path to the GitFit database file.
+  db-dir:
+    description: Path to the database directory (the directory containing the SQLite database).
     required: false
-    default: data/db/git-fit.db
+    default: data/db
+  db-name:
+    description: Database filename within db-dir. Must be a plain filename (no path separators).
+    required: false
+    default: git-fit.db
   git-restore-mode:
     description: >
       Whether and how to restore the database from a git branch when the cache
@@ -37,23 +41,28 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: '[db] Validate database path'
+    - name: '[db] Validate inputs'
       shell: bash
       env:
-        DATABASE_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ inputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
       run: |
-        if [ -z "$DATABASE_PATH" ] || [[ "$DATABASE_PATH" =~ [[:cntrl:]] ]] || [[ "$DATABASE_PATH" == -* ]]; then
-          echo "::error::Invalid database-path '$DATABASE_PATH'" >&2
+        if [ -z "$DB_DIR" ] || [[ "$DB_DIR" =~ [[:cntrl:]] ]] || [[ "$DB_DIR" == -* ]]; then
+          echo "::error::Invalid db-dir '$DB_DIR'" >&2
           exit 1
         fi
-    - name: '[db] Normalize database paths'
+        if [ -z "$DB_NAME" ] || [[ "$DB_NAME" =~ [[:cntrl:]] ]] || [[ "$DB_NAME" == -* ]] \
+           || [[ "$DB_NAME" == */* ]] || [ "$DB_NAME" = "." ] || [ "$DB_NAME" = ".." ]; then
+          echo "::error::Invalid db-name '$DB_NAME' (plain filename, no path separators)" >&2
+          exit 1
+        fi
+    - name: '[db] Normalize database directory'
       id: normalize
       shell: bash
       env:
-        DATABASE_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ inputs.db-dir }}
       run: |
-        DB_PATH="$(realpath -m "$DATABASE_PATH")"
-        DB_DIR="$(dirname "$DB_PATH")"
+        DB_DIR="$(realpath -m "$DB_DIR" || echo "$DB_DIR")"
         case "$DB_DIR" in
           "$GITHUB_WORKSPACE"/*) REL_DIR="${DB_DIR#"$GITHUB_WORKSPACE"/}" ;;
           "$GITHUB_WORKSPACE")   REL_DIR="." ;;
@@ -91,14 +100,14 @@ runs:
       if: ${{ inputs.git-restore-mode != 'none' }}
       shell: bash
       env:
-        DB_PATH: ${{ inputs.database-path }}
         DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
         GIT_RESTORE_MODE: ${{ inputs.git-restore-mode }}
         GIT_BRANCH: ${{ inputs.git-branch }}
       run: |
         set -euo pipefail
+        DB_PATH="$DB_DIR/$DB_NAME"
         BRANCH="${GIT_BRANCH:-GitFit/db}"
-        DB_NAME="$(basename "$DB_PATH")"
         if [ "$GIT_RESTORE_MODE" = "fallback" ] && [ -s "$DB_PATH" ]; then
           echo "git-restored-bytes=0" >> "$GITHUB_OUTPUT"
           echo "save-to-git-branch=false" >> "$GITHUB_OUTPUT"
@@ -107,12 +116,7 @@ runs:
         echo "Cache miss / force — restoring DB from branch '$BRANCH'"
         git fetch origin "$BRANCH" || true
         RESTORED=0
-        if git archive --format=tar "origin/$BRANCH" \
-             "$DB_DIR/$DB_NAME" "$DB_DIR/$DB_NAME.SHA256SUMS" 2>/dev/null | tar xf -; then
-          RESTORED="$(stat -c%s "$DB_PATH" 2>/dev/null || echo 0)"
-        else
-          echo "SHA256SUMS not in branch — restoring DB only"
-          git archive --format=tar "origin/$BRANCH" "$DB_DIR/$DB_NAME" 2>/dev/null | tar xf - || true
+        if git archive --format=tar "origin/$BRANCH" "$DB_DIR/" 2>/dev/null | tar xf -; then
           RESTORED="$(stat -c%s "$DB_PATH" 2>/dev/null || echo 0)"
         fi
         echo "git-restored-bytes=$RESTORED" >> "$GITHUB_OUTPUT"

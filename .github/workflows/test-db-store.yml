@@ -10,13 +10,13 @@ permissions:
 
 # Test isolation invariant — the GitFit-db-v0- cache is SHARED across all jobs
 # and persists between runs (~7d LRU). To keep tests deterministic:
-#   * Every job that saves to cache writes the canonical path data/db/ and the
-#     canonical file git-fit.db (see db-smoke and db-save-git-unchanged).
-#   * Any other DB path is guaranteed absent from the cache: no past or future
-#     test save writes a different filename, so a restore can never populate it.
-#     db-git-restore-fallback relies on this to deterministically simulate a
-#     cache miss with test/fixtures/db/git-restore.db.
-#   * Do NOT add test saves of other filenames/directories — that reintroduces
+#   * Every job that saves to cache writes the canonical db-dir data/db and the
+#     canonical db-name git-fit.db (see db-smoke and db-save-git-unchanged).
+#   * Any other db-dir + db-name combination is guaranteed absent from the
+#     cache: no past or future test save writes a different dir/name, so a
+#     restore can never populate it. db-git-restore-fallback relies on this to
+#     deterministically simulate a cache miss with test/fixtures/db/git-restore.db.
+#   * Do NOT add test saves of other dir/name combinations — that reintroduces
 #     cross-job pollution and breaks the invariant.
 
 jobs:
@@ -25,6 +25,49 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: raven-actions/actionlint@v2
+
+  db-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derive paths (relative)
+        id: rel
+        uses: ./paths
+        with:
+          database-path: data/db/workouts.db
+      - name: Assert relative outputs
+        run: |
+          test "${{ steps.rel.outputs.dir }}" = "data/db"
+          test "${{ steps.rel.outputs.name }}" = "workouts.db"
+          test "${{ steps.rel.outputs.db-path }}" = "data/db/workouts.db"
+      - name: Derive paths (.. normalization via realpath)
+        id: norm
+        uses: ./paths
+        with:
+          database-path: data/foo/../db/git-fit.db
+      - name: Assert normalized to canonical path
+        run: |
+          test "${{ steps.norm.outputs.dir }}" = "data/db"
+          test "${{ steps.norm.outputs.name }}" = "git-fit.db"
+          test "${{ steps.norm.outputs.db-path }}" = "data/db/git-fit.db"
+      - name: Derive paths (absolute under workspace strips to relative)
+        id: abs
+        uses: ./paths
+        with:
+          database-path: ${{ github.workspace }}/data/db/git-fit.db
+      - name: Assert workspace prefix stripped
+        run: |
+          test "${{ steps.abs.outputs.dir }}" = "data/db"
+          test "${{ steps.abs.outputs.name }}" = "git-fit.db"
+          test "${{ steps.abs.outputs.db-path }}" = "data/db/git-fit.db"
+      - name: Invalid database-path must fail
+        id: invalid
+        continue-on-error: true
+        uses: ./paths
+        with:
+          database-path: '-bad'
+      - name: Assert invalid failed
+        run: test "${{ steps.invalid.outcome }}" = "failure"
 
   db-smoke:
     runs-on: ubuntu-latest
@@ -38,21 +81,24 @@ jobs:
         id: save1
         uses: ./cache/save
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
       - name: Assert changed=true
         run: test "${{ steps.save1.outputs.changed }}" = "true"
       - name: Restore from cache
         id: restore
         uses: ./cache/restore
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
       - name: Assert file restored
         run: test -f data/db/git-fit.db
       - name: Save again (unchanged)
         id: save2
         uses: ./cache/save
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
       - name: Assert changed=false (gate)
         run: test "${{ steps.save2.outputs.changed }}" = "false"
 
@@ -60,14 +106,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Invalid path must fail
-        id: invalid
+      - name: Invalid db-name (leading dash) must fail
+        id: name-dash
         continue-on-error: true
         uses: ./cache/save
         with:
-          database-path: '-bad'
-      - name: Assert invalid failed
-        run: test "${{ steps.invalid.outcome }}" = "failure"
+          db-dir: data/db
+          db-name: '-bad'
+      - name: Assert invalid name failed
+        run: test "${{ steps.name-dash.outcome }}" = "failure"
+      - name: Invalid db-name (path traversal) must fail
+        id: name-slash
+        continue-on-error: true
+        uses: ./cache/save
+        with:
+          db-dir: data/db
+          db-name: '../etc/x.db'
+      - name: Assert traversal rejected
+        run: test "${{ steps.name-slash.outcome }}" = "failure"
+      - name: Invalid db-dir (leading dash) must fail
+        id: dir-dash
+        continue-on-error: true
+        uses: ./cache/save
+        with:
+          db-dir: '-bad'
+          db-name: git-fit.db
+      - name: Assert invalid dir failed
+        run: test "${{ steps.dir-dash.outcome }}" = "failure"
 
   # Git branch restore fixtures (committed to master):
   #   data/db/git-fit.db               -> 'from-git' (force test: must win over cache 'hello')
@@ -80,7 +145,8 @@ jobs:
         id: restore
         uses: ./cache/restore
         with:
-          database-path: data/db/never-here.db
+          db-dir: data/db
+          db-name: never-here.db
       - name: Assert no git restore
         run: |
           test "${{ steps.restore.outputs.git-restored-bytes }}" = "0"
@@ -96,7 +162,8 @@ jobs:
         id: restore
         uses: ./cache/restore
         with:
-          database-path: test/fixtures/db/git-restore.db
+          db-dir: test/fixtures/db
+          db-name: git-restore.db
           git-restore-mode: fallback
           git-branch: master
       - name: Assert restored from git
@@ -113,7 +180,8 @@ jobs:
         id: restore
         uses: ./cache/restore
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
           git-restore-mode: force
           git-branch: master
       - name: Assert git content wins
@@ -130,7 +198,8 @@ jobs:
         id: restore
         uses: ./cache/restore
         with:
-          database-path: data/db/never-here.db
+          db-dir: data/db
+          db-name: never-here.db
           git-restore-mode: force
       - name: Assert graceful degradation
         run: |
@@ -146,7 +215,8 @@ jobs:
         continue-on-error: true
         uses: ./cache/restore
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
           git-restore-mode: bogus
       - name: Assert invalid failed
         run: test "${{ steps.invalid.outcome }}" = "failure"
@@ -163,7 +233,8 @@ jobs:
         id: save
         uses: ./cache/save
         with:
-          database-path: data/db/git-fit.db
+          db-dir: data/db
+          db-name: git-fit.db
           save-to-git-branch: master
       - name: Assert worktree unchanged path (no push)
         run: |

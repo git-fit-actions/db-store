@@ -6,38 +6,61 @@ GitHub Actions for caching and restoring the git-fit SQLite database.
 
 | Path | Description |
 |------|-------------|
+| `paths` | Derive the database directory, filename, and full path from a single file path |
 | `cache/restore` | Restore the database cache and snapshot baseline checksums before syncing |
 | `cache/save` | Detect changes and save the database to cache after syncing |
 
 ## Usage
 
 ```yaml
+env:
+  GIT_FIT_DATABASE_PATH: ${{ vars.GIT_FIT_DATABASE_PATH || 'data/db/git-fit.db' }}
+
 steps:
+  - uses: git-fit-actions/db-store/paths@v1
+    id: db-paths
+    with:
+      database-path: ${{ env.GIT_FIT_DATABASE_PATH }}
   - uses: git-fit-actions/db-store/cache/restore@v1
     id: restore
     with:
-      database-path: data/db/git-fit.db
+      db-dir: ${{ steps.db-paths.outputs.dir }}
+      db-name: ${{ steps.db-paths.outputs.name }}
   - name: Run sync
     run: bundle exec git fit sync --checkpoint
+    env:
+      GIT_FIT_DATABASE_PATH: ${{ steps.db-paths.outputs.db-path }}
   - uses: git-fit-actions/db-store/cache/save@v1
     id: save
     with:
-      database-path: data/db/git-fit.db
+      db-dir: ${{ steps.db-paths.outputs.dir }}
+      db-name: ${{ steps.db-paths.outputs.name }}
   - name: Upload DB artifact
     if: steps.save.outputs.changed == 'true'
     uses: actions/upload-artifact@v4
     with:
       name: git-fit-db
-      path: data/db
+      path: ${{ steps.db-paths.outputs.dir }}
 ```
 
+The `paths` action is optional: `cache/restore` and `cache/save` accept `db-dir` + `db-name`
+directly. `paths` exists so every DB path reference in a workflow (db-store, git-fit,
+checkpoint, artifacts, summary) is derived once from a single variable.
+
 ## Inputs
+
+### paths
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `database-path` | no | `data/db/git-fit.db` | Full path to the SQLite database file. Use an absolute path or a path relative to `GITHUB_WORKSPACE`. |
 
 ### cache/restore
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `database-path` | no | `data/db/git-fit.db` | Path to the SQLite database file. Use an absolute path or a path relative to `GITHUB_WORKSPACE`. Tilde (`~`) is not expanded. |
+| `db-dir` | no | `data/db` | Path to the database directory. Use an absolute path or a path relative to `GITHUB_WORKSPACE`. Tilde (`~`) is not expanded. |
+| `db-name` | no | `git-fit.db` | Database filename within `db-dir`. Must be a plain filename (no path separators); the database file path is `db-dir/db-name`. |
 | `git-restore-mode` | no | `none` | Whether/how to restore the database from a git branch when the cache does not provide it: `none` (disabled) / `fallback` (restore only when the database is missing/empty after the cache restore) / `force` (always restore from git, overwriting any cache-restored content). |
 | `git-branch` | no | `GitFit/db` | Archive branch to restore the database from. Only used when `git-restore-mode` is not `none`. |
 
@@ -45,10 +68,19 @@ steps:
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `database-path` | no | `data/db/git-fit.db` | Path to the SQLite database file. Use an absolute path or a path relative to `GITHUB_WORKSPACE`. Tilde (`~`) is not expanded. |
+| `db-dir` | no | `data/db` | Path to the database directory. Use an absolute path or a path relative to `GITHUB_WORKSPACE`. Tilde (`~`) is not expanded. |
+| `db-name` | no | `git-fit.db` | Database filename within `db-dir`. Must be a plain filename (no path separators); the database file path is `db-dir/db-name`. |
 | `save-to-git-branch` | no | `false` | When the database changed and this is a branch name, push the database to that branch. `false` or empty disables the git push. `true` is rejected — pass an explicit branch name. |
 
 ## Outputs
+
+### paths
+
+| Output | Description |
+|--------|-------------|
+| `dir` | Database directory relative to `GITHUB_WORKSPACE` (e.g. `data/db`). |
+| `name` | Database filename (e.g. `git-fit.db`). |
+| `db-path` | Full database path relative to `GITHUB_WORKSPACE` (`dir/name`). |
 
 ### cache/restore
 
@@ -75,15 +107,21 @@ The `cache/restore` and `cache/save` actions can use a git archive branch (defau
 Typical cache-miss recovery wiring:
 
 ```yaml
+- uses: git-fit-actions/db-store/paths@v1
+  id: db-paths
+  with:
+    database-path: ${{ vars.GIT_FIT_DATABASE_PATH }}
 - uses: git-fit-actions/db-store/cache/restore@v1
   id: restore
   with:
-    database-path: data/db/git-fit.db
+    db-dir: ${{ steps.db-paths.outputs.dir }}
+    db-name: ${{ steps.db-paths.outputs.name }}
     git-restore-mode: fallback
     git-branch: GitFit/db
 - uses: git-fit-actions/db-store/cache/save@v1
   with:
-    database-path: data/db/git-fit.db
+    db-dir: ${{ steps.db-paths.outputs.dir }}
+    db-name: ${{ steps.db-paths.outputs.name }}
     save-to-git-branch: ${{ steps.restore.outputs.save-to-git-branch }}
 ```
 
@@ -110,6 +148,7 @@ GitFit-db-v0-snapshot                          (unarchive recovery snapshot — 
 
 | Action | Required |
 |--------|----------|
+| `paths` | none |
 | `cache/restore` | `actions: read`; `contents: read` when `git-restore-mode` is not `none` (git fetch/archive) |
 | `cache/save` | `actions: write`; `contents: write` when `save-to-git-branch` is set (git push) |
 
@@ -121,14 +160,19 @@ GitFit-db-v0-snapshot                          (unarchive recovery snapshot — 
 
 Free-form inputs are validated before any filesystem, cache, or git operation; invalid values fail fast.
 
-**cache/restore:**
+**paths:**
 - `database-path`: rejected if empty, contains control characters, or starts with `-`.
+
+**cache/restore:**
+- `db-dir`: rejected if empty, contains control characters, or starts with `-`.
+- `db-name`: rejected if empty, contains control characters, starts with `-`, contains a path separator, or is `.`/`..` — it must be a plain filename.
 - `git-restore-mode`: must be `none`, `fallback`, or `force`.
 - `git-branch` (when `git-restore-mode` is not `none`): defaults to `GitFit/db` when empty; otherwise rejected if it contains control characters or starts with `-`.
 
 **cache/save:**
-- `database-path`: rejected if empty, contains control characters, or starts with `-`.
-- `save-to-git-branch`: `true` is rejected — pass an explicit branch name or `false`/empty. Branch names are shell-quoted in `git fetch`/`git push`.
+- `db-dir`: rejected if empty, contains control characters, or starts with `-`.
+- `db-name`: rejected as in `cache/restore`.
+- `save-to-git-branch`: `true` is rejected — pass an explicit branch name or `false`/empty; otherwise rejected if it contains control characters or starts with `-`. Branch names are shell-quoted in `git fetch`/`git push`.
 
 ## License
 

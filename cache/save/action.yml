@@ -6,10 +6,14 @@ branding:
   color: green
 
 inputs:
-  database-path:
-    description: Path to the GitFit database file.
+  db-dir:
+    description: Path to the database directory (the directory containing the SQLite database).
     required: false
-    default: data/db/git-fit.db
+    default: data/db
+  db-name:
+    description: Database filename within db-dir. Must be a plain filename (no path separators).
+    required: false
+    default: git-fit.db
   save-to-git-branch:
     description: >
       When the database changed, also push it to this git branch. Wire in the
@@ -31,23 +35,34 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: '[db] Validate database path'
+    - name: '[db] Validate inputs'
       shell: bash
       env:
-        DATABASE_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ inputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
+        SAVE_TO_GIT_BRANCH: ${{ inputs.save-to-git-branch }}
       run: |
-        if [ -z "$DATABASE_PATH" ] || [[ "$DATABASE_PATH" =~ [[:cntrl:]] ]] || [[ "$DATABASE_PATH" == -* ]]; then
-          echo "::error::Invalid database-path '$DATABASE_PATH'" >&2
+        if [ -z "$DB_DIR" ] || [[ "$DB_DIR" =~ [[:cntrl:]] ]] || [[ "$DB_DIR" == -* ]]; then
+          echo "::error::Invalid db-dir '$DB_DIR'" >&2
           exit 1
         fi
-    - name: '[db] Normalize database paths'
+        if [ -z "$DB_NAME" ] || [[ "$DB_NAME" =~ [[:cntrl:]] ]] || [[ "$DB_NAME" == -* ]] \
+           || [[ "$DB_NAME" == */* ]] || [ "$DB_NAME" = "." ] || [ "$DB_NAME" = ".." ]; then
+          echo "::error::Invalid db-name '$DB_NAME' (plain filename, no path separators)" >&2
+          exit 1
+        fi
+        if [ -n "$SAVE_TO_GIT_BRANCH" ] && [ "$SAVE_TO_GIT_BRANCH" != "false" ] \
+           && ( [[ "$SAVE_TO_GIT_BRANCH" =~ [[:cntrl:]] ]] || [[ "$SAVE_TO_GIT_BRANCH" == -* ]] ); then
+          echo "::error::Invalid save-to-git-branch '$SAVE_TO_GIT_BRANCH'" >&2
+          exit 1
+        fi
+    - name: '[db] Normalize database directory'
       id: normalize
       shell: bash
       env:
-        DATABASE_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ inputs.db-dir }}
       run: |
-        DB_PATH="$(realpath -m "$DATABASE_PATH")"
-        DB_DIR="$(dirname "$DB_PATH")"
+        DB_DIR="$(realpath -m "$DB_DIR" || echo "$DB_DIR")"
         case "$DB_DIR" in
           "$GITHUB_WORKSPACE"/*) REL_DIR="${DB_DIR#"$GITHUB_WORKSPACE"/}" ;;
           "$GITHUB_WORKSPACE")   REL_DIR="." ;;
@@ -87,11 +102,12 @@ runs:
       if: ${{ steps.check.outputs.changed == 'true' && inputs.save-to-git-branch != 'false' && inputs.save-to-git-branch != '' }}
       shell: bash
       env:
-        DB_PATH: ${{ inputs.database-path }}
         DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
         SAVE_TO_GIT_BRANCH: ${{ inputs.save-to-git-branch }}
       run: |
         set -euo pipefail
+        DB_PATH="$DB_DIR/$DB_NAME"
         WT="$RUNNER_TEMP/git-fit-db-save"
         cleanup() { git worktree remove --force "$WT" 2>/dev/null || true; }
         trap cleanup EXIT
