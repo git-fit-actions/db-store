@@ -10,11 +10,29 @@ inputs:
     description: Path to the GitFit database file.
     required: false
     default: data/db/git-fit.db
+  git-restore-mode:
+    description: >
+      Whether and how to restore the database from a git branch when the cache
+      does not provide it. 'none' (default) disables git restore; 'fallback'
+      restores only when the database is missing/empty after the cache restore;
+      'force' always restores from git, overwriting any cache-restored content.
+    required: false
+    default: 'none'
+  git-branch:
+    description: Archive branch to restore the database from. Only used when git-restore-mode is not 'none'.
+    required: false
+    default: GitFit/db
 
 outputs:
-  db-dir:
-    description: Directory containing the database (relative to workspace when possible).
-    value: ${{ steps.normalize.outputs.db-dir }}
+  git-restored-bytes:
+    description: Bytes restored from the git branch (0 when none or disabled).
+    value: ${{ steps.git-restore.outputs.git-restored-bytes || '0' }}
+  save-to-git-branch:
+    description: >
+      Branch to push the database back to after sync when the git restore
+      succeeded; 'false' otherwise. Wire this into db-store/cache/save's
+      'save-to-git-branch' input to persist the database to the git branch.
+    value: ${{ steps.git-restore.outputs.save-to-git-branch || 'false' }}
 
 runs:
   using: composite
@@ -42,6 +60,22 @@ runs:
           *)                     REL_DIR="$DB_DIR" ;;
         esac
         echo "db-dir=$REL_DIR" >> "$GITHUB_OUTPUT"
+    - name: '[db] Validate git restore inputs'
+      shell: bash
+      env:
+        GIT_RESTORE_MODE: ${{ inputs.git-restore-mode }}
+        GIT_BRANCH: ${{ inputs.git-branch }}
+      run: |
+        if [ "$GIT_RESTORE_MODE" != "none" ] && [ "$GIT_RESTORE_MODE" != "fallback" ] && [ "$GIT_RESTORE_MODE" != "force" ]; then
+          echo "::error::Invalid git-restore-mode '$GIT_RESTORE_MODE' (expected none|fallback|force)" >&2
+          exit 1
+        fi
+        if [ "$GIT_RESTORE_MODE" != "none" ]; then
+          if [ -n "$GIT_BRANCH" ] && ( [[ "$GIT_BRANCH" =~ [[:cntrl:]] ]] || [[ "$GIT_BRANCH" == -* ]] ); then
+            echo "::error::Invalid git-branch '$GIT_BRANCH'" >&2
+            exit 1
+          fi
+        fi
     - name: '[db] Restore from cache'
       uses: actions/cache/restore@v6
       with:
@@ -52,6 +86,47 @@ runs:
         # including per-run -v0-{run} sync caches and -v0-snapshot recovery caches from unarchive.
         restore-keys: |
           GitFit-db-v0-
+    - name: '[db] Restore from git branch'
+      id: git-restore
+      if: ${{ inputs.git-restore-mode != 'none' }}
+      shell: bash
+      env:
+        DB_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        GIT_RESTORE_MODE: ${{ inputs.git-restore-mode }}
+        GIT_BRANCH: ${{ inputs.git-branch }}
+      run: |
+        set -euo pipefail
+        BRANCH="${GIT_BRANCH:-GitFit/db}"
+        DB_NAME="$(basename "$DB_PATH")"
+        if [ "$GIT_RESTORE_MODE" = "fallback" ] && [ -s "$DB_PATH" ]; then
+          echo "git-restored-bytes=0" >> "$GITHUB_OUTPUT"
+          echo "save-to-git-branch=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Cache miss / force — restoring DB from branch '$BRANCH'"
+        git fetch origin "$BRANCH" || true
+        RESTORED=0
+        if git archive --format=tar "origin/$BRANCH" \
+             "$DB_DIR/$DB_NAME" "$DB_DIR/$DB_NAME.SHA256SUMS" 2>/dev/null | tar xf -; then
+          RESTORED="$(stat -c%s "$DB_PATH" 2>/dev/null || echo 0)"
+        else
+          echo "SHA256SUMS not in branch — restoring DB only"
+          git archive --format=tar "origin/$BRANCH" "$DB_DIR/$DB_NAME" 2>/dev/null | tar xf - || true
+          RESTORED="$(stat -c%s "$DB_PATH" 2>/dev/null || echo 0)"
+        fi
+        echo "git-restored-bytes=$RESTORED" >> "$GITHUB_OUTPUT"
+        if [ "$RESTORED" -gt 0 ]; then
+          echo "save-to-git-branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Restored DB from branch '$BRANCH': $RESTORED bytes"
+        else
+          echo "save-to-git-branch=false" >> "$GITHUB_OUTPUT"
+          if [ "$GIT_RESTORE_MODE" = "force" ]; then
+            echo "::warning::Force git restore failed — keeping cache-restored DB"
+          else
+            echo "Branch restore failed — DB will be created fresh by sync"
+          fi
+        fi
     - name: '[db] Baseline SHA256SUMS'
       shell: bash
       env:

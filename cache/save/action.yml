@@ -10,11 +10,23 @@ inputs:
     description: Path to the GitFit database file.
     required: false
     default: data/db/git-fit.db
+  save-to-git-branch:
+    description: >
+      When the database changed, also push it to this git branch. Wire in the
+      'save-to-git-branch' output of db-store/cache/restore to persist the
+      database back to the git branch after a cache-miss / force restore.
+      'false' or empty disables the git push. 'true' is rejected — pass an
+      explicit branch name.
+    required: false
+    default: 'false'
 
 outputs:
   changed:
     description: Whether the database changed during sync.
     value: ${{ steps.check.outputs.changed }}
+  git-save-status:
+    description: Result of the optional git branch save (skipped|unchanged|pushed|failed).
+    value: ${{ steps.git-save.outputs.status || 'skipped' }}
 
 runs:
   using: composite
@@ -70,3 +82,51 @@ runs:
       with:
         path: ${{ steps.normalize.outputs.db-dir }}
         key: GitFit-db-v0-${{ github.run_number }}-${{ github.run_id }}${{ github.run_attempt > 1 && format('-{0}', github.run_attempt) || '' }}
+    - name: '[db] Save to git branch'
+      id: git-save
+      if: ${{ steps.check.outputs.changed == 'true' && inputs.save-to-git-branch != 'false' && inputs.save-to-git-branch != '' }}
+      shell: bash
+      env:
+        DB_PATH: ${{ inputs.database-path }}
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        SAVE_TO_GIT_BRANCH: ${{ inputs.save-to-git-branch }}
+      run: |
+        set -euo pipefail
+        WT="$RUNNER_TEMP/git-fit-db-save"
+        cleanup() { git worktree remove --force "$WT" 2>/dev/null || true; }
+        trap cleanup EXIT
+
+        fail_save() { echo "::warning::$1"; echo "status=failed" >> "$GITHUB_OUTPUT"; exit 0; }
+
+        if [ "$SAVE_TO_GIT_BRANCH" = "true" ]; then
+          echo "::error::save-to-git-branch does not accept 'true' — pass an explicit branch name or 'false'" >&2
+          exit 1
+        fi
+        BRANCH="$SAVE_TO_GIT_BRANCH"
+        echo "Pushing changed DB to branch '$BRANCH'"
+        git fetch origin "$BRANCH" || {
+          echo "::warning::Cannot fetch branch '$BRANCH' — skipping git save"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+        rm -rf "$WT"
+        git worktree add --detach "$WT" "origin/$BRANCH" >/dev/null \
+          || fail_save "Cannot create worktree for '$BRANCH' — DB kept in cache only"
+        mkdir -p "$WT/$DB_DIR"
+        for f in "$DB_PATH" "$DB_PATH.SHA256SUMS" "$DB_PATH-wal" "$DB_PATH-shm"; do
+          [ -f "$f" ] && cp -f "$f" "$WT/$DB_DIR/"
+        done
+        git -C "$WT" add -f -A "$DB_DIR/" \
+          || fail_save "git add failed on '$BRANCH' worktree — DB kept in cache only"
+        if git -C "$WT" diff --cached --quiet; then
+          echo "status=unchanged" >> "$GITHUB_OUTPUT"
+          echo "git-save=unchanged (no diff vs branch '$BRANCH')"
+          exit 0
+        fi
+        git -C "$WT" -c user.name=workouts-bot -c user.email=bot@workouts \
+          commit -m "db: save after sync ($(date +%Y-%m-%d)) [skip ci]" \
+          || fail_save "git commit failed on '$BRANCH' worktree — DB kept in cache only"
+        git -C "$WT" push origin "HEAD:$BRANCH" \
+          || fail_save "git push to '$BRANCH' failed — DB kept in cache only"
+        echo "status=pushed" >> "$GITHUB_OUTPUT"
+        echo "git-save=pushed to '$BRANCH'"

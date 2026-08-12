@@ -8,6 +8,17 @@ permissions:
   contents: read
   actions: write
 
+# Test isolation invariant — the GitFit-db-v0- cache is SHARED across all jobs
+# and persists between runs (~7d LRU). To keep tests deterministic:
+#   * Every job that saves to cache writes the canonical path data/db/ and the
+#     canonical file git-fit.db (see db-smoke and db-save-git-unchanged).
+#   * Any other DB path is guaranteed absent from the cache: no past or future
+#     test save writes a different filename, so a restore can never populate it.
+#     db-git-restore-fallback relies on this to deterministically simulate a
+#     cache miss with test/fixtures/db/git-restore.db.
+#   * Do NOT add test saves of other filenames/directories — that reintroduces
+#     cross-job pollution and breaks the invariant.
+
 jobs:
   actionlint:
     runs-on: ubuntu-latest
@@ -35,10 +46,8 @@ jobs:
         uses: ./cache/restore
         with:
           database-path: data/db/git-fit.db
-      - name: Assert db-dir and file restored
-        run: |
-          test "${{ steps.restore.outputs.db-dir }}" = "data/db"
-          test -f data/db/git-fit.db
+      - name: Assert file restored
+        run: test -f data/db/git-fit.db
       - name: Save again (unchanged)
         id: save2
         uses: ./cache/save
@@ -46,28 +55,6 @@ jobs:
           database-path: data/db/git-fit.db
       - name: Assert changed=false (gate)
         run: test "${{ steps.save2.outputs.changed }}" = "false"
-
-  db-path-matrix:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - path: data/db/git-fit.db
-            expected-dir: data/db
-          - path: nested/level/db/git-fit.db
-            expected-dir: nested/level/db
-          - path: /tmp/git-fit-db/git-fit.db
-            expected-dir: /tmp/git-fit-db
-    steps:
-      - uses: actions/checkout@v7
-      - name: Restore (normalize check)
-        id: restore
-        uses: ./cache/restore
-        with:
-          database-path: ${{ matrix.path }}
-      - name: Assert db-dir
-        run: test "${{ steps.restore.outputs.db-dir }}" = "${{ matrix.expected-dir }}"
 
   db-invalid-path:
     runs-on: ubuntu-latest
@@ -81,3 +68,104 @@ jobs:
           database-path: '-bad'
       - name: Assert invalid failed
         run: test "${{ steps.invalid.outcome }}" = "failure"
+
+  # Git branch restore fixtures (committed to master):
+  #   data/db/git-fit.db               -> 'from-git' (force test: must win over cache 'hello')
+  #   test/fixtures/db/git-restore.db  -> 'fallback-fixture' (fallback test)
+  db-git-restore-disabled:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore with default mode (none)
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: data/db/never-here.db
+      - name: Assert no git restore
+        run: |
+          test "${{ steps.restore.outputs.git-restored-bytes }}" = "0"
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "false"
+
+  db-git-restore-fallback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Remove fixture to establish the "DB absent from cache" precondition
+        run: rm -f test/fixtures/db/git-restore.db
+      - name: Restore from git branch on cache miss
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: test/fixtures/db/git-restore.db
+          git-restore-mode: fallback
+          git-branch: master
+      - name: Assert restored from git
+        run: |
+          test "${{ steps.restore.outputs.git-restored-bytes }}" -gt 0
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "master"
+          test -s test/fixtures/db/git-restore.db
+
+  db-git-restore-force:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore force (git overwrites cache)
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: data/db/git-fit.db
+          git-restore-mode: force
+          git-branch: master
+      - name: Assert git content wins
+        run: |
+          test "$(cat data/db/git-fit.db)" = "from-git"
+          test "${{ steps.restore.outputs.git-restored-bytes }}" -gt 0
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "master"
+
+  db-git-restore-force-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Force with missing branch (GitFit/db absent here) — graceful
+        id: restore
+        uses: ./cache/restore
+        with:
+          database-path: data/db/never-here.db
+          git-restore-mode: force
+      - name: Assert graceful degradation
+        run: |
+          test "${{ steps.restore.outputs.git-restored-bytes }}" = "0"
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "false"
+
+  db-git-invalid-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Invalid git-restore-mode must fail
+        id: invalid
+        continue-on-error: true
+        uses: ./cache/restore
+        with:
+          database-path: data/db/git-fit.db
+          git-restore-mode: bogus
+      - name: Assert invalid failed
+        run: test "${{ steps.invalid.outcome }}" = "failure"
+
+  db-save-git-unchanged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No restore: the baseline file is missing, so save reports changed=true
+      # (documented baseline contract, same path exercised by db-smoke save1).
+      # git-save then copies data/db/git-fit.db ('from-git', the master fixture)
+      # into the worktree — identical to the branch → worktree unchanged, no push.
+      - name: Save (changed=true, DB equals branch fixture — worktree unchanged)
+        id: save
+        uses: ./cache/save
+        with:
+          database-path: data/db/git-fit.db
+          save-to-git-branch: master
+      - name: Assert worktree unchanged path (no push)
+        run: |
+          test "${{ steps.save.outputs.changed }}" = "true"
+          test "${{ steps.save.outputs.git-save-status }}" = "unchanged"
