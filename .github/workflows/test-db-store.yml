@@ -15,7 +15,8 @@ permissions:
 #   * Any other db-dir + db-name combination is guaranteed absent from the
 #     cache: no past or future test save writes a different dir/name, so a
 #     restore can never populate it. db-git-restore-fallback relies on this to
-#     deterministically simulate a cache miss with test/fixtures/db/git-restore.db.
+#     deterministically simulate a cache miss (fixture created at test time on a
+#     fake local origin, path absent from the cache).
 #   * Do NOT add test saves of other dir/name combinations — that reintroduces
 #     cross-job pollution and breaks the invariant.
 
@@ -134,9 +135,10 @@ jobs:
       - name: Assert invalid dir failed
         run: test "${{ steps.dir-dash.outcome }}" = "failure"
 
-  # Git branch restore fixtures (committed to master):
-  #   data/db/git-fit.db               -> 'from-git' (force test: must win over cache 'hello')
-  #   test/fixtures/db/git-restore.db  -> 'fallback-fixture' (fallback test)
+  # Git branch restore/save tests build their fixture content at TEST TIME on a
+  # throwaway branch pushed to a fake LOCAL origin (per-job bare repo), so no
+  # fixture files are committed to the repository. The fake origin is real git:
+  # the action's own git fetch/archive/worktree code paths run against it.
   db-git-restore-disabled:
     runs-on: ubuntu-latest
     steps:
@@ -156,8 +158,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Remove fixture to establish the "DB absent from cache" precondition
-        run: rm -f test/fixtures/db/git-restore.db
+        with:
+          fetch-depth: 0
+      - name: Set up fake origin with fallback fixture
+        run: |
+          set -euo pipefail
+          ORIG_BRANCH="$(git branch --show-current)"
+          git remote remove origin
+          git init -q --bare "$RUNNER_TEMP/fake-origin.git"
+          git remote add origin "$RUNNER_TEMP/fake-origin.git"
+          git checkout -q -b git-fit-fixtures
+          mkdir -p test/fixtures/db
+          printf 'fallback-fixture' > test/fixtures/db/git-restore.db
+          git add -f test/fixtures/db/git-restore.db
+          git -c user.name=test -c user.email=test commit -qm "test fixtures"
+          git push -q origin git-fit-fixtures
+          git checkout -q "$ORIG_BRANCH"
+          rm -f test/fixtures/db/git-restore.db
+      # File absent from both cache and workspace → fallback restores from the branch.
       - name: Restore from git branch on cache miss
         id: restore
         uses: ./cache/restore
@@ -165,17 +183,35 @@ jobs:
           db-dir: test/fixtures/db
           db-name: git-restore.db
           git-restore-mode: fallback
-          git-branch: master
+          git-branch: git-fit-fixtures
       - name: Assert restored from git
         run: |
           test "${{ steps.restore.outputs.git-restored-bytes }}" -gt 0
-          test "${{ steps.restore.outputs.save-to-git-branch }}" = "master"
-          test -s test/fixtures/db/git-restore.db
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "git-fit-fixtures"
+          test "$(cat test/fixtures/db/git-restore.db)" = "fallback-fixture"
 
   db-git-restore-force:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up fake origin with force fixture
+        run: |
+          set -euo pipefail
+          ORIG_BRANCH="$(git branch --show-current)"
+          git remote remove origin
+          git init -q --bare "$RUNNER_TEMP/fake-origin.git"
+          git remote add origin "$RUNNER_TEMP/fake-origin.git"
+          git checkout -q -b git-fit-fixtures
+          mkdir -p data/db
+          printf 'from-git' > data/db/git-fit.db
+          git add -f data/db/git-fit.db
+          git -c user.name=test -c user.email=test commit -qm "test fixtures"
+          git push -q origin git-fit-fixtures
+          git checkout -q "$ORIG_BRANCH"
+          rm -f data/db/git-fit.db
+      # Force always restores from git, overwriting whatever the cache provides.
       - name: Restore force (git overwrites cache)
         id: restore
         uses: ./cache/restore
@@ -183,12 +219,12 @@ jobs:
           db-dir: data/db
           db-name: git-fit.db
           git-restore-mode: force
-          git-branch: master
+          git-branch: git-fit-fixtures
       - name: Assert git content wins
         run: |
           test "$(cat data/db/git-fit.db)" = "from-git"
           test "${{ steps.restore.outputs.git-restored-bytes }}" -gt 0
-          test "${{ steps.restore.outputs.save-to-git-branch }}" = "master"
+          test "${{ steps.restore.outputs.save-to-git-branch }}" = "git-fit-fixtures"
 
   db-git-restore-force-failure:
     runs-on: ubuntu-latest
@@ -225,17 +261,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       # No restore: the baseline file is missing, so save reports changed=true
       # (documented baseline contract, same path exercised by db-smoke save1).
-      # git-save then copies data/db/git-fit.db ('from-git', the master fixture)
-      # into the worktree — identical to the branch → worktree unchanged, no push.
+      # A fake origin branch holds a DB identical to the workspace DB; git-save
+      # copies the workspace DB into that branch's worktree → no diff → unchanged.
+      - name: Set up fake origin + workspace DB matching the branch
+        run: |
+          set -euo pipefail
+          ORIG_BRANCH="$(git branch --show-current)"
+          git remote remove origin
+          git init -q --bare "$RUNNER_TEMP/fake-origin.git"
+          git remote add origin "$RUNNER_TEMP/fake-origin.git"
+          git checkout -q -b git-fit-fixtures
+          mkdir -p data/db
+          printf 'from-git' > data/db/git-fit.db
+          git add -f data/db/git-fit.db
+          git -c user.name=test -c user.email=test commit -qm "test fixtures"
+          git push -q origin git-fit-fixtures
+          git checkout -q "$ORIG_BRANCH"
+      # workspace data/db/git-fit.db stays ('from-git', matches the branch).
       - name: Save (changed=true, DB equals branch fixture — worktree unchanged)
         id: save
         uses: ./cache/save
         with:
           db-dir: data/db
           db-name: git-fit.db
-          save-to-git-branch: master
+          save-to-git-branch: git-fit-fixtures
       - name: Assert worktree unchanged path (no push)
         run: |
           test "${{ steps.save.outputs.changed }}" = "true"
