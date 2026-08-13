@@ -92,6 +92,7 @@ runs:
         fi
         echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
     - name: '[db] Save cached database'
+      id: cache-save
       if: steps.check.outputs.changed == 'true'
       uses: actions/cache/save@v6
       with:
@@ -146,3 +147,33 @@ runs:
           || fail_save "git push to '$BRANCH' failed — DB kept in cache only"
         echo "status=pushed" >> "$GITHUB_OUTPUT"
         echo "git-save=pushed to '$BRANCH'"
+    - name: '[db] Write save summary'
+      if: always()
+      shell: bash
+      env:
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
+        CHANGED: ${{ steps.check.outputs.changed }}
+        CACHE_SAVE_OUTCOME: ${{ steps.cache-save.outcome }}
+        GIT_SAVE_STATUS: ${{ steps.git-save.outputs.status || 'skipped' }}
+      run: |
+        DB_PATH="$DB_DIR/$DB_NAME"
+        if [ "$CHANGED" = "true" ]; then
+          if [ "$CACHE_SAVE_OUTCOME" = "failure" ]; then
+            CACHE_SAVE="failed"
+          else
+            CACHE_SAVE="attempted"
+          fi
+        else
+          CACHE_SAVE="skipped (unchanged)"
+        fi
+        {
+          echo "### GitFit db-store save"
+          echo ""
+          echo "| Item | Value |"
+          echo "|---|---|"
+          echo "| DB path | $DB_PATH |"
+          echo "| Changed | $CHANGED |"
+          echo "| Cache save | $CACHE_SAVE |"
+          echo "| Git save | $GIT_SAVE_STATUS |"
+        } >> "$GITHUB_STEP_SUMMARY"

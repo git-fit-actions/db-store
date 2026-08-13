@@ -141,3 +141,35 @@ runs:
         else
           : > "$RUNNER_TEMP/git-fit-db-before.SHA256SUMS"
         fi
+    - name: '[db] Write restore summary'
+      shell: bash
+      env:
+        DB_DIR: ${{ steps.normalize.outputs.db-dir }}
+        DB_NAME: ${{ inputs.db-name }}
+        GIT_RESTORED_BYTES: ${{ steps.git-restore.outputs.git-restored-bytes || '0' }}
+        SAVE_TO_GIT_BRANCH: ${{ steps.git-restore.outputs.save-to-git-branch || 'false' }}
+      run: |
+        DB_PATH="$DB_DIR/$DB_NAME"
+        if [ -s "$DB_PATH" ]; then
+          SIZE="$(stat -c%s "$DB_PATH")"
+          DB_FILE="present ($SIZE bytes)"
+          if [ "$GIT_RESTORED_BYTES" -gt 0 ]; then
+            RESTORE_SOURCE="git"
+          else
+            RESTORE_SOURCE="cache"
+          fi
+        else
+          DB_FILE="missing"
+          RESTORE_SOURCE="none (fresh)"
+        fi
+        {
+          echo "### GitFit db-store restore"
+          echo ""
+          echo "| Item | Value |"
+          echo "|---|---|"
+          echo "| DB path | $DB_PATH |"
+          echo "| DB file | $DB_FILE |"
+          echo "| Restore source | $RESTORE_SOURCE |"
+          echo "| Git restore (bytes) | $GIT_RESTORED_BYTES |"
+          echo "| save-to-git-branch | $SAVE_TO_GIT_BRANCH |"
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -96,6 +96,17 @@ checkpoint, artifacts, summary) is derived once from a single variable.
 | `changed` | Whether the database changed during sync. |
 | `git-save-status` | Result of the optional git branch save: `skipped`, `unchanged`, `pushed`, or `failed`. |
 
+## Step summaries
+
+Each action appends a markdown block to the job step summary (`| Item | Value |`):
+
+- `cache/restore` → `### GitFit db-store restore`: DB path, DB file presence/size,
+  restore source (`cache` / `git` / `none (fresh)`), git-restored bytes and
+  `save-to-git-branch`.
+- `cache/save` → `### GitFit db-store save`: DB path, `Changed` flag, cache save
+  status (`saved` / `skipped (unchanged)` / `failed`) and git save status
+  (`pushed` / `unchanged` / `skipped` / `failed`).
+
 ## Git branch fallback & save-back
 
 The `cache/restore` and `cache/save` actions can use a git archive branch (default `GitFit/db`) as a fallback when the 7-day LRU cache misses or is untrusted.
