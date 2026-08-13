@@ -98,14 +98,15 @@ checkpoint, artifacts, summary) is derived once from a single variable.
 
 ## Step summaries
 
-Each action appends a markdown block to the job step summary (`| Item | Value |`):
+Each action appends a markdown block to the job step summary, laid out
+horizontally (items as columns, a single value row) to keep it compact:
 
-- `cache/restore` → `### GitFit db-store restore`: DB path, DB file presence/size,
-  restore source (`cache` / `git` / `none (fresh)`), git-restored bytes and
-  `save-to-git-branch`.
-- `cache/save` → `### GitFit db-store save`: DB path, `Changed` flag, cache save
-  status (`saved` / `skipped (unchanged)` / `failed`) and git save status
-  (`pushed` / `unchanged` / `skipped` / `failed`).
+- `cache/restore` → `### GitFit db-store restore`: `DB path`, `DB file`
+  presence/size, restore source (`cache` / `git` / `none (fresh)`),
+  git-restored bytes and `save-to-git-branch`.
+- `cache/save` → `### GitFit db-store save`: `DB path`, `Changed` flag,
+  cache save status (`saved` / `skipped (unchanged)` / `failed`) and git save
+  status (`pushed` / `unchanged` / `skipped` / `failed`).
 
 ## Git branch fallback & save-back
 

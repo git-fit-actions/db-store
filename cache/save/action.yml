@@ -170,10 +170,7 @@ runs:
         {
           echo "### GitFit db-store save"
           echo ""
-          echo "| Item | Value |"
-          echo "|---|---|"
-          echo "| DB path | $DB_PATH |"
-          echo "| Changed | $CHANGED |"
-          echo "| Cache save | $CACHE_SAVE |"
-          echo "| Git save | $GIT_SAVE_STATUS |"
+          echo "| DB path | Changed | Cache save | Git save |"
+          echo "|---|---|---|---|"
+          echo "| $DB_PATH | $CHANGED | $CACHE_SAVE | $GIT_SAVE_STATUS |"
         } >> "$GITHUB_STEP_SUMMARY"
