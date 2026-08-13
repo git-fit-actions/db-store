@@ -166,6 +166,6 @@ runs:
           echo "### GitFit db-store restore"
           echo ""
           echo "| DB path | DB file | Restore source | Git restore (bytes) | save-to-git-branch |"
-          echo "|---|---|---|---|---|"
+          echo "|:---|:---:|:---:|:---:|:---:|"
           echo "| $DB_PATH | $DB_FILE | $RESTORE_SOURCE | $GIT_RESTORED_BYTES | $SAVE_TO_GIT_BRANCH |"
         } >> "$GITHUB_STEP_SUMMARY"

@@ -171,6 +171,6 @@ runs:
           echo "### GitFit db-store save"
           echo ""
           echo "| DB path | Changed | Cache save | Git save |"
-          echo "|---|---|---|---|"
+          echo "|:---|:---:|:---:|:---:|"
           echo "| $DB_PATH | $CHANGED | $CACHE_SAVE | $GIT_SAVE_STATUS |"
         } >> "$GITHUB_STEP_SUMMARY"
