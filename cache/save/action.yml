@@ -158,6 +158,13 @@ runs:
         GIT_SAVE_STATUS: ${{ steps.git-save.outputs.status || 'skipped' }}
       run: |
         DB_PATH="$DB_DIR/$DB_NAME"
+        glyph() {
+          case "$1" in
+            present*|cache|attempted|pushed|ok|hit|saved|imported|changed) echo "✅";;
+            missing|failed|errors) echo "❌";;
+            *) echo "⏭️";;
+          esac
+        }
         if [ "$CHANGED" = "true" ]; then
           if [ "$CACHE_SAVE_OUTCOME" = "failure" ]; then
             CACHE_SAVE="failed"
@@ -172,5 +179,9 @@ runs:
           echo ""
           echo "| DB path | Changed | Cache save | Git save |"
           echo "|:---|:---:|:---:|:---:|"
-          echo "| $DB_PATH | $CHANGED | $CACHE_SAVE | $GIT_SAVE_STATUS |"
+          echo "| $DB_PATH | $CHANGED | $(glyph "$CACHE_SAVE") $CACHE_SAVE | $(glyph "$GIT_SAVE_STATUS") $GIT_SAVE_STATUS |"
+          if [ "$CACHE_SAVE" = "failed" ] || [ "$GIT_SAVE_STATUS" = "failed" ]; then
+            echo ""
+            echo "_✅ 正常产出 · ⏭️ 预料内无变化/兜底 · ❌ 失败_"
+          fi
         } >> "$GITHUB_STEP_SUMMARY"

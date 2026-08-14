@@ -150,6 +150,13 @@ runs:
         SAVE_TO_GIT_BRANCH: ${{ steps.git-restore.outputs.save-to-git-branch || 'false' }}
       run: |
         DB_PATH="$DB_DIR/$DB_NAME"
+        glyph() {
+          case "$1" in
+            present*|cache|attempted|pushed|ok|hit|saved|imported|changed) echo "✅";;
+            missing|failed|errors) echo "❌";;
+            *) echo "⏭️";;
+          esac
+        }
         if [ -s "$DB_PATH" ]; then
           SIZE="$(stat -c%s "$DB_PATH")"
           DB_FILE="present ($SIZE bytes)"
@@ -167,5 +174,9 @@ runs:
           echo ""
           echo "| DB path | DB file | Restore source | Git restore (bytes) | save-to-git-branch |"
           echo "|:---|:---:|:---:|:---:|:---:|"
-          echo "| $DB_PATH | $DB_FILE | $RESTORE_SOURCE | $GIT_RESTORED_BYTES | $SAVE_TO_GIT_BRANCH |"
+          echo "| $DB_PATH | $(glyph "$DB_FILE") $DB_FILE | $(glyph "$RESTORE_SOURCE") $RESTORE_SOURCE | $GIT_RESTORED_BYTES | $SAVE_TO_GIT_BRANCH |"
+          if [ "$DB_FILE" = "missing" ] || [ "$RESTORE_SOURCE" = "git" ]; then
+            echo ""
+            echo "_✅ 正常产出 · ⏭️ 预料内无变化/兜底 · ❌ 失败_"
+          fi
         } >> "$GITHUB_STEP_SUMMARY"
